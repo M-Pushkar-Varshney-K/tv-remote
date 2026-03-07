@@ -15,6 +15,7 @@ const PLINK = isDev
 
 function createWindow() {
   mainWindow = new BrowserWindow({
+    icon: path.join(__dirname, "../icons/icons/win/icon.ico"),
     width: 1400,
     height: 900,
     autoHideMenuBar: true,

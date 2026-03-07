@@ -1,32 +1,30 @@
 {
   "name": "tv-remote",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "private": true,
   "main": "electron/main.js",
-
+  "description": "Desktop remote control application",
   "scripts": {
     "dev": "concurrently \"next dev\" \"wait-on http://localhost:3000 && electron .\"",
     "build": "next build",
     "dist": "npm run build && electron-builder",
     "start": "electron ."
   },
-
   "dependencies": {
     "next": "16.1.6",
     "react": "19.2.3",
     "react-dom": "19.2.3"
   },
-
   "devDependencies": {
     "concurrently": "^9.2.1",
     "cross-env": "^10.1.0",
     "electron": "^40.6.1",
     "electron-builder": "^26.8.1",
+    "electron-icon-maker": "^0.0.5",
     "eslint": "^9",
     "eslint-config-next": "16.1.6",
     "wait-on": "^9.0.4"
   },
-
   "build": {
     "appId": "com.tvremote.app",
     "productName": "TV Remote",
@@ -39,11 +37,23 @@
       {
         "from": "bin/",
         "to": "bin/",
-        "filter": ["**/*"]
+        "filter": [
+          "**/*"
+        ]
       }
     ],
     "win": {
-      "target": "nsis"
+      "target": "nsis",
+      "icon": "icons/icons/win/icon.ico"
+    },
+    "nsis": {
+      "installerIcon": "icons/icons/win/icon.ico",
+      "uninstallerIcon": "icons/icons/win/icon.ico",
+      "installerHeaderIcon": "icons/icons/win/icon.ico"
     }
+  },
+  "author": {
+    "name": "MPVK",
+    "email": "appushkarvarshney@gmail.com"
   }
 }
