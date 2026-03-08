@@ -43,7 +43,7 @@ export default function Remote() {
         gap: 12,
         padding: 16
       }}>
-        <button onClick={() => run("cmd1")}>Button 1</button>
+        <button onClick={() => run("ls -al")}>Button 1</button>
         <button onClick={() => run("cmd2")}>Button 2</button>
         <button onClick={() => run("cmd3")}>Button 3</button>
       </div>
