@@ -61,17 +61,18 @@ pub fn start_image_socket(app: AppHandle, host: String) {
 
 // ---------------- CMD SOCKET ----------------
 pub fn start_cmd_socket(app: AppHandle, host: String, state: AppState) {
-    thread::spawn(move || {
-        match TcpStream::connect((host.as_str(), CMD_PORT)) {
-            Ok(mut stream) => {
-                app.emit("conn-status", "cmd connected").ok();
+    match TcpStream::connect((host.as_str(), CMD_PORT)) {
+        Ok(mut stream) => {
+            app.emit("conn-status", "cmd connected").ok();
 
-                // store socket globally
-                {
-                    let mut lock = state.cmd_socket.lock().unwrap();
-                    *lock = Some(stream.try_clone().unwrap());
-                }
+            // ✅ store socket BEFORE thread
+            {
+                let mut lock = state.cmd_socket.lock().unwrap();
+                *lock = Some(stream.try_clone().unwrap());
+            }
 
+            // now spawn reader thread
+            thread::spawn(move || {
                 let mut buf = Vec::new();
                 let mut tmp = [0u8; 1024];
 
@@ -90,12 +91,12 @@ pub fn start_cmd_socket(app: AppHandle, host: String, state: AppState) {
                         app.emit("cmd-reply", line).ok();
                     }
                 }
-            }
-            Err(_) => {
-                app.emit("conn-status", "cmd failed").ok();
-            }
+            });
         }
-    });
+        Err(_) => {
+            app.emit("conn-status", "cmd failed").ok();
+        }
+    }
 }
 
 // ---------------- SEND CMD ----------------

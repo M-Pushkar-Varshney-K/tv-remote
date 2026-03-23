@@ -9,6 +9,9 @@ export const api = {
   connect: (ip: string): Promise<void> =>
     invoke("connect", { ip }),
 
+  setData: (): Promise<void> =>
+    invoke("set_data"),
+
   sendCmd: (cmd: string): Promise<void> =>
     invoke("send_cmd", { cmd }),
 

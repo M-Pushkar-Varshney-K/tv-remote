@@ -8,6 +8,8 @@ export default function Home() {
   const [ip, setIp] = useState("");
   const [status, setStatus] = useState("");
   const [loading, setLoading] = useState(false);
+  const [pixels, setPixels] = useState("");
+  const [type, setType] = useState("");
 
   const router = useRouter();
 
@@ -21,13 +23,18 @@ export default function Home() {
       setStatus("Please enter an IP address.");
       return;
     }
+    if (!pixels || !type) {
+      setStatus("Please select ratio and type");
+      return;
+    }
 
     try {
       setLoading(true);
-
       // ✅ Tauri backend call
       await api.connect(ipTrimmed);
-
+      
+      await api.sendCmd(`sz ${pixels} ${type}`);
+   
       // ✅ navigate to next page
       router.push("/remote");
     } catch (err: unknown) {
@@ -40,7 +47,7 @@ export default function Home() {
     } finally {
       setLoading(false);
     }
-  }, [ip, router]);
+  }, [ip, router, pixels, type]);
 
   return (
     <div
@@ -89,31 +96,89 @@ export default function Home() {
               }}
             />
           </label>
-
-          {/* STATUS */}
-          {status && (
-            <div style={{ color: "#ff8a8a", fontSize: 13 }}>
-              {status}
-            </div>
-          )}
-
-          {/* BUTTON */}
-          <button
-            onClick={connect}
-            disabled={loading}
-            style={{
-              padding: "10px 14px",
-              borderRadius: 8,
-              border: "none",
-              background: loading ? "#555" : "#22c55e",
-              color: "#0b1020",
-              fontWeight: 700,
-              cursor: loading ? "default" : "pointer",
-            }}
-          >
-            {loading ? "Connecting..." : "Connect"}
-          </button>
         </div>
+
+        {/* Ratio */}
+        <div style={{ display: "flex", gap: 12 }}>
+          <div>
+            <p>Select Ratio</p>
+
+            <label>
+              <input
+                type="radio"
+                name="type"
+                value="-al"
+                checked={pixels === "-al"}
+                onChange={(e) => setPixels(e.target.value)}
+              />
+              16:9
+            </label>
+
+            <label>
+              <input
+                type="radio"
+                name="type"
+                value="-h"
+                checked={pixels === "-h"}
+                onChange={(e) => setPixels(e.target.value)}
+              />
+              4:3
+            </label>
+          </div>
+        </div>
+
+        {/* Type */}
+        <div style={{ display: "flex", gap: 12 }}>
+          <div>
+            <p>Select Type</p>
+
+            <label>
+              <input
+                type="radio"
+                name="type1"
+                value="pushkar"   // ✅ FIXED (matches backend)
+                checked={type === "pushkar"}
+                onChange={(e) => setType(e.target.value)}
+              />
+              pushkar
+            </label>
+
+            <label>
+              <input
+                type="radio"
+                name="type1"
+                value="Don't_know"
+                checked={type === "Don't_know"}
+                onChange={(e) => setType(e.target.value)}
+              />
+              Don&apos;t know
+            </label>
+          </div>
+        </div>
+
+        {/* STATUS */}
+        {status && (
+          <div style={{ color: "#ff8a8a", fontSize: 13 }}>
+            {status}
+          </div>
+        )}
+
+        {/* BUTTON */}
+        <button
+          onClick={connect}
+          disabled={loading}
+          style={{
+            padding: "10px 14px",
+            borderRadius: 8,
+            border: "none",
+            background: loading ? "#555" : "#22c55e",
+            color: "#0b1020",
+            fontWeight: 700,
+            cursor: loading ? "default" : "pointer",
+          }}
+        >
+          {loading ? "Connecting..." : "Connect"}
+        </button>
       </div>
     </div>
   );
