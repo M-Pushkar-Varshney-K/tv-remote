@@ -10,11 +10,16 @@ const CMD_PORT: u16 = 9990;
 const MAX_FRAME: usize = 10 * 1024 * 1024;
 
 // ---------------- IMAGE SOCKET ----------------
-pub fn start_image_socket(app: AppHandle, host: String) {
+pub fn start_image_socket(app: AppHandle, host: String, state: AppState) {
     thread::spawn(move || {
         match TcpStream::connect((host.as_str(), IMAGE_PORT)) {
             Ok(mut stream) => {
                 app.emit("conn-status", "image connected").ok();
+
+                {
+                    let mut lock = state.image_socket.lock().unwrap();
+                    *lock = Some(stream.try_clone().unwrap());
+                }
 
                 let mut buf = Vec::new();
                 let mut tmp = [0u8; 65536];

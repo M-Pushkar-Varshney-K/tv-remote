@@ -1,253 +1,92 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
-import { api } from "@/lib/api"; // ✅ Tauri API
+import { useCallback, useEffect, useRef, useState } from "react";
+import RemoteUI from "@/app/comp/Remote";
 
-// ---------- Types ----------
-type FramePayload = string; // object URL string
-type StatusPayload = string;
-type CmdReply = string;
+export default function RemotePage() {
+  const [sidebarWidth, setSidebarWidth] = useState(35);
+  const [showRemote, setShowRemote] = useState(true);
+  const [isDragging, setIsDragging] = useState(false);
 
-// ---------- Buttons ----------
-const REMOTE_BUTTONS = [
-  { label: "TRIAL",  cmd: "TRIAL" },
-  { label: "Power",  cmd: "Power" },
-  { label: "Home",   cmd: "Home" },
-  { label: "Live_TV",cmd: "Live_TV" },
-  { label: "Back",   cmd: "Back" },
-  { label: "Up",     cmd: "Up" },
-  { label: "Down",   cmd: "Down" },
-  { label: "Left",   cmd: "Left" },
-  { label: "Right",  cmd: "Right" },
-  { label: "OK",     cmd: "OK" },
-  { label: "Cursor", cmd: "Cursor" },
-  { label: "Vol_up", cmd: "Vol_up" },
-  { label: "Vol_down",cmd: "Vol_down" },
-  { label: "CH_up",  cmd: "CH_up" },
-  { label: "CH_down",cmd: "CH_down" },
-  { label: "Mute",   cmd: "Mute" },
-  { label: "InStart",cmd: "InStart" },
-  { label: "1",      cmd: "1" },
-  { label: "2",      cmd: "2" },
-  { label: "3",      cmd: "3" },
-  { label: "4",      cmd: "4" },
-  { label: "5",      cmd: "5" },
-  { label: "6",      cmd: "6" },
-  { label: "7",      cmd: "7" },
-  { label: "8",      cmd: "8" },
-  { label: "9",      cmd: "9" },
-  { label: "0",      cmd: "0" },
-];
 
-// ---------- Component ----------
-export default function Remote() {
-  const canvasRef = useRef<HTMLCanvasElement | null>(null);
-  const backCanvasRef = useRef<HTMLCanvasElement | null>(null);
-
-  const [status, setStatus] = useState<string>("Connecting…");
-  const [cmdLog, setCmdLog] = useState<string[]>([]);
-
-  // ---------- Canvas Resize ----------
+  // Load sidebar width from localStorage
   useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-
-    const updateSize = () => {
-      const rect = canvas.getBoundingClientRect();
-      const dpr = Math.min(window.devicePixelRatio || 1, 3);
-
-      const w = Math.floor(rect.width * dpr);
-      const h = Math.floor(rect.height * dpr);
-
-      if (canvas.width !== w || canvas.height !== h) {
-        canvas.width = w;
-        canvas.height = h;
-
-        if (backCanvasRef.current) {
-          backCanvasRef.current.width = w;
-          backCanvasRef.current.height = h;
-        }
-      }
-    };
-
-    updateSize();
-    const ro = new ResizeObserver(updateSize);
-    ro.observe(canvas);
-
-    window.addEventListener("resize", updateSize);
-
-    return () => {
-      ro.disconnect();
-      window.removeEventListener("resize", updateSize);
-    };
+    const saved = localStorage.getItem("remoteWidth");
+    if (saved) setSidebarWidth(Number(saved));
   }, []);
 
-  // ---------- Draw Frame ----------
-  const drawFrame = async (url: string) => {
-    const front = canvasRef.current;
-    if (!front) return;
-
-    if (!backCanvasRef.current) {
-      backCanvasRef.current = document.createElement("canvas");
-    }
-
-    const back = backCanvasRef.current;
-
-    back.width = front.width;
-    back.height = front.height;
-
-    const ctxBack = back.getContext("2d")!;
-    const ctxFront = front.getContext("2d")!;
-
-    const res = await fetch(url);
-    const blob = await res.blob();
-    const bitmap = await createImageBitmap(blob);
-
-    const W = back.width;
-    const H = back.height;
-
-    const scale = Math.min(W / bitmap.width, H / bitmap.height);
-    const w = bitmap.width * scale;
-    const h = bitmap.height * scale;
-
-    const x = (W - w) / 2;
-    const y = (H - h) / 2;
-
-    ctxBack.clearRect(0, 0, W, H);
-    ctxBack.drawImage(bitmap, x, y, w, h);
-    ctxFront.drawImage(back, 0, 0);
-
-    bitmap.close();
-  };
-
-  // ---------- Tauri Events ----------
-  useEffect(() => {
-    let unlistenFrame: (() => void) | undefined;
-    let unlistenStatus: (() => void) | undefined;
-    let unlistenCmd: (() => void) | undefined;
-
-    let lastUrl: string | null = null;
-
-    const init = async () => {
-      // Frame stream
-      unlistenFrame = await api.onFrame(async (url: FramePayload) => {
-        try {
-          await drawFrame(url);
-
-          if (lastUrl && lastUrl !== url) {
-            URL.revokeObjectURL(lastUrl);
-          }
-
-          lastUrl = url;
-        } catch {
-          setStatus("Frame decode error");
-        }
-      });
-
-      // Status
-      unlistenStatus = await api.onStatus((s: StatusPayload) => {
-        setStatus(s);
-      });
-
-      // Command reply
-      unlistenCmd = await api.onCmdReply((line: CmdReply) => {
-        setCmdLog((prev) => [`⇦ ${line}`, ...prev]);
-      });
-    };
-
-    init();
-
-    return () => {
-      unlistenFrame && unlistenFrame();
-      unlistenStatus && unlistenStatus();
-      unlistenCmd && unlistenCmd();
-
-      if (lastUrl) {
-        URL.revokeObjectURL(lastUrl);
-      }
-    };
+  const handleWidthChange = useCallback((w: number) => {
+    const clamped = Math.max(20, Math.min(60, w));
+    setSidebarWidth(clamped);
+    localStorage.setItem("remoteWidth", String(clamped));
   }, []);
 
-  // ---------- Send Command ----------
-  const run = async (cmd: string) => {
-    try {
-      await api.sendCmd(cmd);
-      setCmdLog((prev) => [`▶ ${cmd}`, ...prev]);
-    } catch (e) {
-      setCmdLog((prev) => [`❌ ${cmd} - ${String(e)}`, ...prev]);
-    }
-  };
+  useEffect(() => {
+    if (!isDragging) return;
 
-  // ---------- UI ----------
+    const handleMouseMove = (e: MouseEvent) => {
+      const newWidth = (e.clientX / window.innerWidth) * 100;
+      handleWidthChange(newWidth);
+    };
+
+    const handleMouseUp = () => setIsDragging(false);
+
+    window.addEventListener("mousemove", handleMouseMove);
+    window.addEventListener("mouseup", handleMouseUp);
+
+    return () => {
+      window.removeEventListener("mousemove", handleMouseMove);
+      window.removeEventListener("mouseup", handleMouseUp);
+    };
+  }, [isDragging, handleWidthChange]);
+
   return (
-    <div
-      style={{
-        minHeight: "100vh",
-        display: "grid",
-        gridTemplateColumns: "1fr 400px",
-        gap: 16,
-        background: "#0b1020",
-        color: "#fff",
-        padding: 16,
-      }}
-    >
-      {/* SCREEN */}
-      <div>
-        <h3>TV Screen</h3>
-        <canvas
-          ref={canvasRef}
-          style={{
-            width: "100%",
-            height: "70vh",
-            background: "#000",
-            borderRadius: 12,
-          }}
-        />
-        <div style={{ marginTop: 8, fontSize: 12 }}>{status}</div>
+    <div className="h-screen w-screen bg-slate-900 flex flex-col overflow-hidden">
+      {/* Header */}
+      <div className="flex items-center justify-between bg-gradient-to-r from-slate-800 to-slate-700 px-4 py-3 border-b border-slate-600 shadow-lg">
+        <h1 className="text-white font-bold text-xl tracking-tight">🎬 TV Remote</h1>
+        <button
+          onClick={() => setShowRemote(!showRemote)}
+          className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white text-sm font-medium rounded-lg transition-colors"
+        >
+          {showRemote ? "◀ Hide Remote" : "▶ Show Remote"}
+        </button>
       </div>
 
-      {/* REMOTE */}
-      <div>
-        <h3>Remote</h3>
-
-        <div
-          style={{
-            display: "grid",
-            gridTemplateColumns: "repeat(3, 1fr)",
-            gap: 8,
-          }}
-        >
-          {REMOTE_BUTTONS.map((b) => (
-            <button
-              key={b.label}
-              onClick={() => run(b.cmd)}
-              style={{
-                padding: 10,
-                borderRadius: 8,
-                background: "#1f2937",
-                color: "#fff",
-                border: "none",
-              }}
-            >
-              {b.label}
-            </button>
-          ))}
+      {/* Content Area */}
+      <div className="flex-1 flex overflow-hidden">
+        {/* Video section - takes remaining space */}
+        <div className="flex-1 bg-black flex items-center justify-center overflow-auto">
+          <div className="text-slate-400 text-center">
+            <p className="text-lg font-semibold mb-2">📺 Video Stream</p>
+            <p className="text-sm">Connect to a server to see video here</p>
+          </div>
         </div>
 
-        <div
-          style={{
-            marginTop: 16,
-            background: "#111",
-            padding: 10,
-            borderRadius: 8,
-            height: 200,
-            overflow: "auto",
-          }}
-        >
-          {cmdLog.map((l, i) => (
-            <div key={i}>{l}</div>
-          ))}
-        </div>
+        {/* Sidebar with Remote - Resizable */}
+        {showRemote && (
+          <div
+            className="bg-slate-800 border-l-2 border-slate-700 flex flex-col shadow-2xl transition-all"
+            style={{
+              width: `${sidebarWidth}%`,
+              minWidth: "220px",
+              maxWidth: "65%",
+              cursor: isDragging ? "col-resize" : "default",
+            }}
+          >
+            {/* Resize Handle */}
+            <div
+              className="w-1 bg-slate-600 hover:bg-blue-500 cursor-col-resize transition active:bg-blue-600 flex-shrink-0"
+              onMouseDown={() => setIsDragging(true)}
+              title="Drag to resize remote panel"
+            />
+
+            {/* Remote Content */}
+            <div className="flex-1 min-h-0 p-3">
+              <RemoteUI />
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );

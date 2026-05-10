@@ -15,6 +15,8 @@ export const api = {
   sendCmd: (cmd: string): Promise<void> =>
     invoke("send_cmd", { cmd }),
 
+  disconnect: (): Promise<void> => invoke("disconnect"),
+
   onFrame: async (cb: (url: string) => void): Promise<UnlistenFn> => {
     return listen<FramePayload>("image-frame", (e) => {
       const bytes = new Uint8Array(e.payload);

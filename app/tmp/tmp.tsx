@@ -211,37 +211,18 @@ export default function Remote() {
   // ================= UI =================
   return (
     <div
-      className={`
-        h-screen
-        w-full
-        overflow-hidden
-
-        grid
-        gap-3
-
-        bg-[#0b1020]
-        text-white
-
-        p-2
-        sm:p-3
-        md:p-4
-
-        transition-all
-        duration-300
-
-        ${
-          showRemote
-            ? `
-              grid-cols-1
-              lg:grid-cols-[1fr_320px]
-              xl:grid-cols-[1fr_360px]
-              2xl:grid-cols-[1fr_420px]
-            `
-            : "grid-cols-1"
-        }
-      `}
+      style={{
+        minHeight: "100vh",
+        display: "grid",
+        gridTemplateColumns: showRemote ? "1fr 400px" : "1fr",
+        gap: 16,
+        padding: 16,
+        background: "#0b1020",
+        color: "#fff",
+        transition: "grid-template-columns 0.3s ease-in-out",
+      }}
     >
-      <div className="min-w-0 flex flex-col overflow-hidden">
+      <div>
         {/* ERROR MESSAGE */}
         {errorMsg && (
           <div
@@ -289,21 +270,29 @@ export default function Remote() {
         </div>
 
         {/* CANVAS */}
-        <div className="flex-1 min-h-0 overflow-hidden">
-          <canvas
-            ref={canvasRef}
-            className="w-full h-full rounded-xl bg-black"
-          />
-        </div>
+        <canvas
+          ref={canvasRef}
+          style={{
+            width: "100%",
+            height: "70vh",
+            background: "#000",
+            borderRadius: 12,
+          }}
+        />
 
         <div style={{ fontSize: 12, marginTop: 8 }}>{statusText}</div>
       </div>
 
-      {showRemote && (
-        <div className="min-h-0 overflow-y-auto overflow-x-hidden">
-          <RemoteUI />
-        </div>
-      )}
+      <div
+        style={{
+          transition: "all 0.3s ease-in-out",
+          opacity: showRemote ? 1 : 0,
+          transform: showRemote ? "translateX(0)" : "translateX(100%)",
+          overflow: "hidden",
+        }}
+      >
+        <RemoteUI />
       </div>
+    </div>
   );
-} 
+}
