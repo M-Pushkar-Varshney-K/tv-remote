@@ -1,4 +1,5 @@
 mod sockets;
+mod ssh;
 mod state;
 
 use state::AppState;
@@ -19,6 +20,8 @@ fn connect(app: tauri::AppHandle, state: State<AppState>, ip: String) -> Result<
 
 #[tauri::command]
 fn disconnect(state: State<AppState>) -> Result<(), String> {
+    ssh::close(state.inner())?;
+
     let mut cmd_lock = state.cmd_socket.lock().map_err(|e| e.to_string())?;
     if let Some(stream) = cmd_lock.take() {
         stream.shutdown(Shutdown::Both).ok();
@@ -37,10 +40,28 @@ fn send_cmd(state: State<AppState>, cmd: String) -> Result<(), String> {
     sockets::send_cmd(&state, cmd)
 }
 
+#[tauri::command]
+fn ssh_start(app: tauri::AppHandle, state: State<AppState>, host: String) -> Result<(), String> {
+    ssh::start(app, state.inner().clone(), host)
+}
+
+#[tauri::command]
+fn ssh_write(state: State<AppState>, data: Vec<u8>) -> Result<(), String> {
+    ssh::write(state.inner(), data)
+}
+
+#[tauri::command]
+fn ssh_close(state: State<AppState>) -> Result<(), String> {
+    ssh::close(state.inner())
+}
+
 fn main() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_store::Builder::default().build())
         .manage(AppState::new())
-        .invoke_handler(tauri::generate_handler![connect, disconnect, send_cmd])
+        .invoke_handler(tauri::generate_handler![
+            connect, disconnect, send_cmd, ssh_start, ssh_write, ssh_close
+        ])
         .run(tauri::generate_context!())
         .expect("error");
 }

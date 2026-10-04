@@ -81,10 +81,10 @@ export default function RemoteUI() {
   }, []);
 
   // --u is the single unit that drives every dimension.
-  // It scales with viewport height so the remote always fits without scrolling.
+  // Container units scale the remote to the space its parent actually provides.
   const root: React.CSSProperties = {
-    ["--u"  as string]: "clamp(0.38rem, 2.2vh, 0.78rem)",
-    ["--gap"as string]: "clamp(2px, 0.4vh, 6px)",
+    ["--u"  as string]: "clamp(0.18rem, min(1.5cqh, 3.4cqw), 0.78rem)",
+    ["--gap"as string]: "max(1px, calc(var(--u) * 0.35))",
     ["--r"  as string]: "calc(var(--u) * 0.55)",  // border-radius unit
   };
 
@@ -148,22 +148,25 @@ export default function RemoteUI() {
 
   return (
     <div style={{
-      width: "100%", height: "100svh",
+      width: "100%", height: "100%", minWidth: 0, minHeight: 0,
       background: "#080808",
       display: "flex", alignItems: "center", justifyContent: "center",
       overflow: "hidden",
+      containerType: "size",
     }}>
-      {/* Remote shell — scales to always fit the screen height */}
+      {/* Remote shell — scales to fit its available container */}
       <div style={{
         ...root,
-        width: "clamp(140px, 26vh, 320px)",
-        borderRadius: "clamp(16px, 3.5vh, 40px)",
+        width: "min(100%, 26cqh, 320px)",
+        maxHeight: "100%",
+        boxSizing: "border-box",
+        borderRadius: "calc(var(--u) * 2.2)",
         background: "linear-gradient(170deg, #1d1d1d 0%, #0d0d0d 100%)",
         border: "1px solid rgba(255,255,255,0.06)",
         boxShadow: "0 20px 60px rgba(0,0,0,0.85), inset 0 1px 0 rgba(255,255,255,0.06)",
-        padding: "clamp(8px,1.8vh,18px) clamp(8px,1.6vh,16px) clamp(10px,2vh,20px)",
+        padding: "calc(var(--u) * 0.8)",
         display: "flex", flexDirection: "column",
-        gap: "clamp(4px, 0.9vh, 12px)",
+        gap: "calc(var(--u) * 0.6)",
       }}>
 
         {/* Power */}

@@ -15,6 +15,15 @@ export const api = {
   sendCmd: (cmd: string): Promise<void> =>
     invoke("send_cmd", { cmd }),
 
+  startSsh: (host: string): Promise<void> =>
+    invoke("ssh_start", { host }),
+
+  writeSsh: (data: number[]): Promise<void> =>
+    invoke("ssh_write", { data }),
+
+  closeSsh: (): Promise<void> =>
+    invoke("ssh_close"),
+
   disconnect: (): Promise<void> => invoke("disconnect"),
 
   onFrame: async (cb: (url: string) => void): Promise<UnlistenFn> => {

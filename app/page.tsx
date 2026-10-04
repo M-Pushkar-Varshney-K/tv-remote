@@ -1,309 +1,264 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { listen, UnlistenFn } from "@tauri-apps/api/event";
-import RemoteUI from "@/app/comp/Remote";
+import { load } from "@tauri-apps/plugin-store";
 import { api } from "@/lib/api";
 
-const isTauri = typeof window !== "undefined" && !!(window as any).__TAURI__;
+type ConnectionSettings = {
+  ip: string;
+  resolution: string;
+  rdtMode: string;
+};
 
-// ---------------- TYPES ----------------
-type FramePayload = string;
-type StatusPayload = string;
+const resolutions = [
+  { key: "_1920_1080", label: "1920 × 1080" },
+  { key: "_1280_720", label: "1280 × 720" },
+  { key: "_960_540", label: "960 × 540" },
+  { key: "_640_480", label: "640 × 480" },
+  { key: "_320_240", label: "320 × 240" },
+];
 
-// ---------------- COMPONENT ----------------
-export default function Remote() {
-  const canvasRef = useRef<HTMLCanvasElement | null>(null);
-  const backCanvasRef = useRef<HTMLCanvasElement | null>(null);
+const rdtModes = [
+  { key: "OSD_ONLY", label: "OSD only" },
+  { key: "OSD_VIDEO", label: "OSD + Video" },
+];
+
+const isTauri = () =>
+  typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+
+async function waitForCommandConnection() {
+  let resolveResult!: (status: string) => void;
+  let rejectResult!: (error: Error) => void;
+  let unlisten: UnlistenFn | undefined;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+
+  const result = new Promise<string>((resolve, reject) => {
+    resolveResult = resolve;
+    rejectResult = reject;
+  });
+  void result.catch(() => {});
+  const ready = listen<string>("conn-status", (event) => {
+    if (event.payload === "cmd connected" || event.payload === "cmd failed") {
+      if (timer) clearTimeout(timer);
+      unlisten?.();
+      if (event.payload === "cmd connected") resolveResult(event.payload);
+      else rejectResult(new Error("Could not connect to the TV command service."));
+    }
+  }).then((stopListening) => {
+    unlisten = stopListening;
+    timer = setTimeout(() => {
+      unlisten?.();
+      rejectResult(new Error("Timed out while connecting to the TV."));
+    }, 5000);
+  });
+
+  return {
+    ready,
+    result,
+    cancel: async () => {
+      await ready.catch(() => {});
+      if (timer) clearTimeout(timer);
+      unlisten?.();
+    },
+  };
+}
+
+export default function Home() {
   const router = useRouter();
+  const [ip, setIp] = useState("");
+  const [resolution, setResolution] = useState("_960_540");
+  const [rdtMode, setRdtMode] = useState("OSD_ONLY");
+  const [status, setStatus] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [restoring, setRestoring] = useState(true);
 
-  // ---------- STATE ----------
-  const [statusText, setStatusText] = useState("Connected");
-  const [errorMsg, setErrorMsg] = useState("");
-  const [showReconnectBtn, setShowReconnectBtn] = useState(false);
-  const [isReconnecting, setIsReconnecting] = useState(false);
-  const [showRemote, setShowRemote] = useState(true);
-
-  // ---------- STORED PARAMS ----------
-  const storedIp = useRef("");
-  const storedResolution = useRef("");
-  const storedRdtMode = useRef("");
-
-  // ---------- AUTO RECONNECT GUARD ----------
-  const autoReconnectDone = useRef(false);
-
-  // ================= CANVAS RESIZE =================
   useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
+    let cancelled = false;
 
-    const resize = () => {
-      const rect = canvas.getBoundingClientRect();
-      const dpr = Math.min(window.devicePixelRatio || 1, 3);
-      canvas.width = Math.floor(rect.width * dpr);
-      canvas.height = Math.floor(rect.height * dpr);
+    const restore = async () => {
+      try {
+        let saved: unknown;
+        if (isTauri()) {
+          const store = await load("settings.json", { autoSave: false });
+          saved = await store.get<unknown>("lastConnection");
+        } else {
+          const value = localStorage.getItem("lastConnection");
+          saved = value ? JSON.parse(value) : undefined;
+        }
+
+        if (cancelled || !saved || typeof saved !== "object") return;
+        const settings = saved as Partial<ConnectionSettings>;
+        if (typeof settings.ip === "string") setIp(settings.ip);
+        if (
+          typeof settings.resolution === "string" &&
+          resolutions.some((item) => item.key === settings.resolution)
+        ) {
+          setResolution(settings.resolution);
+        }
+        if (
+          typeof settings.rdtMode === "string" &&
+          rdtModes.some((item) => item.key === settings.rdtMode)
+        ) {
+          setRdtMode(settings.rdtMode);
+        }
+      } catch (error: unknown) {
+        if (!cancelled) {
+          setStatus(
+            `Could not restore saved connection: ${
+              error instanceof Error ? error.message : String(error)
+            }`
+          );
+        }
+      } finally {
+        if (!cancelled) setRestoring(false);
+      }
     };
 
-    resize();
-    const ro = new ResizeObserver(resize);
-    ro.observe(canvas);
-    window.addEventListener("resize", resize);
-
+    void restore();
     return () => {
-      ro.disconnect();
-      window.removeEventListener("resize", resize);
+      cancelled = true;
     };
   }, []);
 
-  // ================= DRAW FRAME =================
-  const drawFrame = async (url: string) => {
-    try {
-      const front = canvasRef.current;
-      if (!front) return;
-
-      if (!backCanvasRef.current) {
-        backCanvasRef.current = document.createElement("canvas");
-      }
-
-      const back = backCanvasRef.current;
-      back.width = front.width;
-      back.height = front.height;
-
-      const res = await fetch(url);
-      const blob = await res.blob();
-      const bitmap = await createImageBitmap(blob);
-
-      const scale = Math.min(
-        back.width / bitmap.width,
-        back.height / bitmap.height
-      );
-
-      const w = bitmap.width * scale;
-      const h = bitmap.height * scale;
-      const x = (back.width - w) / 2;
-      const y = (back.height - h) / 2;
-
-      back.getContext("2d")!.clearRect(0, 0, back.width, back.height);
-      back.getContext("2d")!.drawImage(bitmap, x, y, w, h);
-      front.getContext("2d")!.drawImage(back, 0, 0);
-
-      bitmap.close();
-    } catch (e: unknown) {
-      const message = e instanceof Error ? e.message : String(e);
-      alert("Frame rendering error: " + message);
-    }
-
-  };
-
-  // ================= WAIT FOR CONNECTION =================
-  const waitForConnected = (timeoutMs = 5000) =>
-    new Promise<void>((resolve, reject) => {
-      let unlisten: UnlistenFn | undefined;
-
-      const timer = setTimeout(() => {
-        unlisten?.();
-        reject(new Error("Connection timeout"));
-      }, timeoutMs);
-
-      listen<StatusPayload>("conn-status", (e) => {
-        if (e.payload.includes("connected")) {
-          clearTimeout(timer);
-          unlisten?.();
-          resolve();
-        }
-      }).then((fn) => (unlisten = fn));
-    });
-
-  // ================= RECONNECT =================
-  const doReconnect = useCallback(async () => {
-    if (!storedIp.current || isReconnecting) return;
-
-    try {
-      setIsReconnecting(true);
-      await api.connect(storedIp.current);
-      await waitForConnected();
-
-      if (storedResolution.current && storedRdtMode.current) {
-        await api.sendCmd(
-          `sz ${storedResolution.current} ${storedRdtMode.current}`
-        );
-      }
-
-      setErrorMsg("");
-      setShowReconnectBtn(false);
-      autoReconnectDone.current = false;
-    } catch (e: unknown) {
-      const message = e instanceof Error ? e.message : String(e);
-      alert("Reconnect failed: " + message);
-      setShowReconnectBtn(true);
-    } finally {
-      setIsReconnecting(false);
-    }
-  }, [isReconnecting]);
-
-  // ================= DISCONNECT =================
-  const handleDisconnect = async () => {
-    try {
-      await api.disconnect();
-    } catch (e: unknown) {
-      console.warn("Disconnect failed", e);
-    } finally {
-      router.push("/");
-    }
-  };
-
-  // ================= TAURI EVENTS =================
-  useEffect(() => {
-    if (!isTauri) {
+  const connect = async () => {
+    const address = ip.trim();
+    if (!address) {
+      setStatus("Please enter an IP address.");
       return;
     }
 
-    let lastUrl: string | null = null;
-    let unFrame: UnlistenFn | undefined;
-    let unStatus: UnlistenFn | undefined;
-    (async () => {
-      unFrame = await api.onFrame(async (url: FramePayload) => {
-        await drawFrame(url);
-        if (lastUrl && lastUrl !== url) URL.revokeObjectURL(lastUrl);
-        lastUrl = url;
-      });
+    setStatus("");
+    setLoading(true);
+    let connection: Awaited<ReturnType<typeof waitForCommandConnection>> | undefined;
+    try {
+      connection = await waitForCommandConnection();
+      await connection.ready;
+      await api.connect(address);
+      await connection.result;
+      await api.sendCmd(`sz ${resolution} ${rdtMode}`);
 
-      unStatus = await api.onStatus((s: StatusPayload) => {
-        setStatusText(s);
+      const settings = { ip: address, resolution, rdtMode };
+      if (isTauri()) {
+        const store = await load("settings.json", { autoSave: false });
+        await store.set("lastConnection", settings);
+        await store.save();
+      } else {
+        localStorage.setItem("lastConnection", JSON.stringify(settings));
+      }
 
-        // -------- SERVER DISCONNECTED --------
-        if (s.includes("disconnected") || s.includes("failed")) {
-          setErrorMsg("Server disconnected");
+      router.push(
+        `/remote?ip=${encodeURIComponent(address)}&resolution=${encodeURIComponent(
+          resolution
+        )}&rdtMode=${encodeURIComponent(rdtMode)}`
+      );
+    } catch (error: unknown) {
+      setStatus(error instanceof Error ? error.message : "Connection failed.");
+      try {
+        await api.disconnect();
+      } catch (disconnectError: unknown) {
+        console.error("Could not clean up failed connection", disconnectError);
+      }
+    } finally {
+      await connection?.cancel();
+      setLoading(false);
+    }
+  };
 
-          if (!autoReconnectDone.current) {
-            autoReconnectDone.current = true;
-            doReconnect();
-          } else {
-            setShowReconnectBtn(true);
-          }
-        }
-
-        // -------- CONNECTED --------
-        if (s.includes("connected")) {
-          setErrorMsg("");
-          setShowReconnectBtn(false);
-          autoReconnectDone.current = false;
-        }
-      });
-    })();
-
-    return () => {
-      unFrame?.();
-      unStatus?.();
-      if (lastUrl) URL.revokeObjectURL(lastUrl);
-    };
-  }, [doReconnect]);
-
-  // ================= READ URL PARAMS =================
-  useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    storedIp.current = params.get("ip") || "";
-    storedResolution.current = params.get("resolution") || "";
-    storedRdtMode.current = params.get("rdtMode") || "";
-  }, []);
-
-  // ================= UI =================
   return (
-    <div
-      className={`
-        h-screen
-        w-full
-        overflow-hidden
+    <main className="fixed inset-0 flex items-center justify-center overflow-hidden bg-gradient-to-br from-slate-900 to-slate-950">
+      <section className="max-h-[90dvh] w-full max-w-md overflow-y-auto rounded-2xl border border-white/10 bg-white/5 p-6 shadow-xl backdrop-blur sm:p-8">
+        <h1 className="mb-6 text-center text-2xl font-semibold text-white">
+          Connect to Server
+        </h1>
 
-        grid
-        gap-3
-
-        bg-[#0b1020]
-        text-white
-
-        p-2
-        sm:p-3
-        md:p-4
-
-        transition-all
-        duration-300
-
-        ${
-          showRemote
-            ? `
-              grid-cols-1
-              lg:grid-cols-[1fr_320px]
-              xl:grid-cols-[1fr_360px]
-              2xl:grid-cols-[1fr_420px]
-            `
-            : "grid-cols-1"
-        }
-      `}
-    >
-      <div className="min-w-0 flex flex-col overflow-hidden">
-        {/* ERROR MESSAGE */}
-        {errorMsg && (
-          <div
-            style={{
-              background: "#7f1d1d",
-              padding: 12,
-              borderRadius: 6,
-              marginBottom: 12,
-            }}
-          >
-            ⚠️ {errorMsg}
+        <div className="space-y-6">
+          <div>
+            <label htmlFor="ip-address" className="text-sm text-slate-300">
+              IP Address
+            </label>
+            <input
+              id="ip-address"
+              value={ip}
+              disabled={restoring || loading}
+              onChange={(event) => setIp(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") void connect();
+              }}
+              placeholder="192.168.0.10"
+              autoComplete="off"
+              className="mt-2 w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-white outline-none focus:ring-2 focus:ring-emerald-500"
+            />
           </div>
-        )}
 
-        {/* CONTROLS */}
-        <div className="flex gap-4 items-center mb-4">
-          {!showReconnectBtn && (
-            <button
-              onClick={handleDisconnect}
-              className="px-6 py-2 bg-gray-700 rounded"
-            >
-              ← Home
-            </button>
-          )}
+          <fieldset>
+            <legend className="mb-2 text-sm text-slate-300">Resolution</legend>
+            <div className="grid grid-cols-2 gap-3">
+              {resolutions.map((item) => (
+                <button
+                  key={item.key}
+                  type="button"
+                  disabled={restoring || loading}
+                  onClick={() => setResolution(item.key)}
+                  aria-pressed={resolution === item.key}
+                  className={`rounded-lg border px-3 py-2 text-sm transition ${
+                    resolution === item.key
+                      ? "border-emerald-500 bg-emerald-500/10 text-emerald-400"
+                      : "border-slate-700 bg-slate-900 text-slate-300 hover:border-slate-500"
+                  }`}
+                >
+                  {item.label}
+                </button>
+              ))}
+            </div>
+          </fieldset>
 
-          {showReconnectBtn && (
-            <button
-              onClick={doReconnect}
-              disabled={isReconnecting}
-              className="px-6 py-2 bg-blue-600 rounded"
+          <fieldset>
+            <legend className="mb-2 text-sm text-slate-300">RDT Mode</legend>
+            <div className="grid gap-3">
+              {rdtModes.map((item) => (
+                <button
+                  key={item.key}
+                  type="button"
+                  disabled={restoring || loading}
+                  onClick={() => setRdtMode(item.key)}
+                  aria-pressed={rdtMode === item.key}
+                  className={`rounded-lg border px-3 py-2 text-left text-sm transition ${
+                    rdtMode === item.key
+                      ? "border-emerald-500 bg-emerald-500/10 text-emerald-400"
+                      : "border-slate-700 bg-slate-900 text-slate-300 hover:border-slate-500"
+                  }`}
+                >
+                  {item.label}
+                </button>
+              ))}
+            </div>
+          </fieldset>
+
+          {status && (
+            <p
+              role="alert"
+              className="rounded-lg border border-red-500/30 bg-red-500/10 p-2 text-sm text-red-400"
             >
-              {isReconnecting ? "Reconnecting..." : "↻ Reconnect"}
-            </button>
+              {status}
+            </p>
           )}
 
           <button
-            onClick={() => setShowRemote(!showRemote)}
-            className="px-4 py-2 bg-gray-700 rounded hover:bg-gray-600 transition-colors"
-            title={showRemote ? "Hide Remote" : "Show Remote"}
+            type="button"
+            onClick={() => void connect()}
+            disabled={loading || restoring}
+            className={`w-full rounded-lg py-3 font-semibold transition ${
+              loading || restoring
+                ? "cursor-not-allowed bg-slate-700 text-slate-400"
+                : "bg-emerald-500 text-slate-900 hover:bg-emerald-400"
+            }`}
           >
-            {showRemote ? "← Hide Remote" : "Show Remote →"}
+            {restoring ? "Loading saved connection…" : loading ? "Connecting…" : "Connect"}
           </button>
-
-          <h3 className="text-xl font-bold text-gray-300">TV Screen</h3>
         </div>
-
-        {/* CANVAS */}
-        <div className="flex-1 min-h-0 overflow-hidden">
-          <canvas
-            ref={canvasRef}
-            className="w-full h-full rounded-xl bg-black"
-          />
-        </div>
-
-        <div style={{ fontSize: 12, marginTop: 8 }}>{statusText}</div>
-      </div>
-
-      {showRemote && (
-        <div className="min-h-0 overflow-y-auto overflow-x-hidden">
-          <RemoteUI />
-        </div>
-      )}
-      </div>
+      </section>
+    </main>
   );
-} 
+}
