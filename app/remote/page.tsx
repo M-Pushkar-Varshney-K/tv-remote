@@ -1,93 +1,294 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
+import { listen } from "@tauri-apps/api/event";
 import RemoteUI from "@/app/comp/Remote";
+import { api } from "@/lib/api";
 
-export default function RemotePage() {
-  const [sidebarWidth, setSidebarWidth] = useState(35);
-  const [showRemote, setShowRemote] = useState(true);
-  const [isDragging, setIsDragging] = useState(false);
+// ---------------- TYPES ----------------
+type FramePayload = string;
+type StatusPayload = string;
 
+// ---------------- CONNECTION STATES ----------------
+type ConnState =
+  | "connected"
+  | "server_disconnected"
+  | "auto_reconnecting"
+  | "manual_reconnect";
 
-  // Load sidebar width from localStorage
+// ---------------- COMPONENT ----------------
+export default function Remote() {
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const backCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const router = useRouter();
+
+  // ---------- STATE ----------
+  const [connState, setConnState] = useState<ConnState>("connected");
+  const [statusText, setStatusText] = useState("Connected");
+  const [errorMsg, setErrorMsg] = useState("");
+  const [showReconnectBtn, setShowReconnectBtn] = useState(false);
+  const [isReconnecting, setIsReconnecting] = useState(false);
+
+  // ---------- STORED PARAMS ----------
+  const storedIp = useRef("");
+  const storedResolution = useRef("");
+  const storedRdtMode = useRef("");
+
+  // ---------- AUTO RECONNECT GUARD ----------
+  const autoReconnectDone = useRef(false);
+
+  // ================= CANVAS RESIZE =================
   useEffect(() => {
-    const saved = localStorage.getItem("remoteWidth");
-    if (saved) setSidebarWidth(Number(saved));
-  }, []);
+    const canvas = canvasRef.current;
+    if (!canvas) return;
 
-  const handleWidthChange = useCallback((w: number) => {
-    const clamped = Math.max(20, Math.min(60, w));
-    setSidebarWidth(clamped);
-    localStorage.setItem("remoteWidth", String(clamped));
-  }, []);
-
-  useEffect(() => {
-    if (!isDragging) return;
-
-    const handleMouseMove = (e: MouseEvent) => {
-      const newWidth = (e.clientX / window.innerWidth) * 100;
-      handleWidthChange(newWidth);
+    const resize = () => {
+      const rect = canvas.getBoundingClientRect();
+      const dpr = Math.min(window.devicePixelRatio || 1, 3);
+      canvas.width = Math.floor(rect.width * dpr);
+      canvas.height = Math.floor(rect.height * dpr);
     };
 
-    const handleMouseUp = () => setIsDragging(false);
-
-    window.addEventListener("mousemove", handleMouseMove);
-    window.addEventListener("mouseup", handleMouseUp);
+    resize();
+    const ro = new ResizeObserver(resize);
+    ro.observe(canvas);
+    window.addEventListener("resize", resize);
 
     return () => {
-      window.removeEventListener("mousemove", handleMouseMove);
-      window.removeEventListener("mouseup", handleMouseUp);
+      ro.disconnect();
+      window.removeEventListener("resize", resize);
     };
-  }, [isDragging, handleWidthChange]);
+  }, []);
 
+  // ================= DRAW FRAME =================
+  const drawFrame = async (url: string) => {
+    try {
+      const front = canvasRef.current;
+      if (!front) return;
+
+      if (!backCanvasRef.current) {
+        backCanvasRef.current = document.createElement("canvas");
+      }
+
+      const back = backCanvasRef.current;
+      back.width = front.width;
+      back.height = front.height;
+
+      const res = await fetch(url);
+      const blob = await res.blob();
+      const bitmap = await createImageBitmap(blob);
+
+      const scale = Math.min(
+        back.width / bitmap.width,
+        back.height / bitmap.height
+      );
+
+      const w = bitmap.width * scale;
+      const h = bitmap.height * scale;
+      const x = (back.width - w) / 2;
+      const y = (back.height - h) / 2;
+
+      back.getContext("2d")!.clearRect(0, 0, back.width, back.height);
+      back.getContext("2d")!.drawImage(bitmap, x, y, w, h);
+      front.getContext("2d")!.drawImage(back, 0, 0);
+
+      bitmap.close();
+    } catch (e: any) {
+      alert("Frame rendering error: " + e.message);
+    }
+  };
+
+  // ================= WAIT FOR CONNECTION =================
+  const waitForConnected = async (timeoutMs = 5000) => {
+    let unlisten: (() => void) | undefined;
+
+    return new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        unlisten?.();
+        reject(new Error("Connection timeout"));
+      }, timeoutMs);
+
+      const handleStatus = (e: { payload: StatusPayload }) => {
+        if (e.payload.includes("connected")) {
+          clearTimeout(timer);
+          unlisten?.();
+          resolve();
+        }
+      };
+
+      listen<StatusPayload>("conn-status", handleStatus)
+        .then((fn) => {
+          unlisten = fn;
+        })
+        .catch((err) => {
+          clearTimeout(timer);
+          reject(err);
+        });
+    });
+  };
+
+  // ================= RECONNECT =================
+  const doReconnect = async () => {
+    if (!storedIp.current || isReconnecting) return;
+
+    try {
+      setIsReconnecting(true);
+      const reconnectWait = waitForConnected();
+      await Promise.resolve();
+      await api.connect(storedIp.current);
+      await reconnectWait;
+
+      if (storedResolution.current && storedRdtMode.current) {
+        await api.sendCmd(
+          `sz ${storedResolution.current} ${storedRdtMode.current}`
+        );
+      }
+
+      setConnState("connected");
+      setErrorMsg("");
+      setShowReconnectBtn(false);
+      autoReconnectDone.current = false;
+    } catch (e: any) {
+      alert("Reconnect failed: " + e.message);
+      setShowReconnectBtn(true);
+      setConnState("manual_reconnect");
+    } finally {
+      setIsReconnecting(false);
+    }
+  };
+
+  // ================= DISCONNECT =================
+  const handleDisconnect = async () => {
+    try {
+      await api.disconnect();
+    } finally {
+      router.push("/");
+    }
+  };
+
+  // ================= TAURI EVENTS =================
+  useEffect(() => {
+    let lastUrl: string | null = null;
+    let unFrame: any;
+    let unStatus: any;
+
+    (async () => {
+      unFrame = await api.onFrame(async (url: FramePayload) => {
+        await drawFrame(url);
+        if (lastUrl && lastUrl !== url) URL.revokeObjectURL(lastUrl);
+        lastUrl = url;
+      });
+
+      unStatus = await api.onStatus((s: StatusPayload) => {
+        setStatusText(s);
+
+        // -------- SERVER DISCONNECTED --------
+        if (s.includes("disconnected") || s.includes("failed")) {
+          setErrorMsg("Server disconnected");
+
+          if (!autoReconnectDone.current) {
+            autoReconnectDone.current = true;
+            setConnState("auto_reconnecting");
+            doReconnect();
+          } else {
+            setShowReconnectBtn(true);
+            setConnState("manual_reconnect");
+          }
+        }
+
+        // -------- CONNECTED --------
+        if (s.includes("connected")) {
+          setConnState("connected");
+          setErrorMsg("");
+          setShowReconnectBtn(false);
+          autoReconnectDone.current = false;
+        }
+      });
+    })();
+
+    return () => {
+      unFrame && unFrame();
+      unStatus && unStatus();
+      if (lastUrl) URL.revokeObjectURL(lastUrl);
+    };
+  }, []);
+
+  // ================= READ URL PARAMS =================
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    storedIp.current = params.get("ip") || "";
+    storedResolution.current = params.get("resolution") || "";
+    storedRdtMode.current = params.get("rdtMode") || "";
+  }, []);
+
+  // ================= UI =================
   return (
-    <div className="h-screen w-screen bg-slate-900 flex flex-col overflow-hidden">
-      {/* Header */}
-      <div className="flex items-center justify-between bg-gradient-to-r from-slate-800 to-slate-700 px-4 py-3 border-b border-slate-600 shadow-lg">
-        <h1 className="text-white font-bold text-xl tracking-tight">🎬 TV Remote</h1>
-        <button
-          onClick={() => setShowRemote(!showRemote)}
-          className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white text-sm font-medium rounded-lg transition-colors"
-        >
-          {showRemote ? "◀ Hide Remote" : "▶ Show Remote"}
-        </button>
-      </div>
-
-      {/* Content Area */}
-      <div className="flex-1 flex overflow-hidden">
-        {/* Video section - takes remaining space */}
-        <div className="flex-1 bg-black flex items-center justify-center overflow-auto">
-          <div className="text-slate-400 text-center">
-            <p className="text-lg font-semibold mb-2">📺 Video Stream</p>
-            <p className="text-sm">Connect to a server to see video here</p>
-          </div>
-        </div>
-
-        {/* Sidebar with Remote - Resizable */}
-        {showRemote && (
+    <div
+      style={{
+        minHeight: "100vh",
+        display: "grid",
+        gridTemplateColumns: "1fr 400px",
+        gap: 16,
+        padding: 16,
+        background: "#0b1020",
+        color: "#fff",
+      }}
+    >
+      <div>
+        {/* ERROR MESSAGE */}
+        {errorMsg && (
           <div
-            className="bg-slate-800 border-l-2 border-slate-700 flex flex-col shadow-2xl transition-all"
             style={{
-              width: `${sidebarWidth}%`,
-              minWidth: "220px",
-              maxWidth: "65%",
-              cursor: isDragging ? "col-resize" : "default",
+              background: "#7f1d1d",
+              padding: 12,
+              borderRadius: 6,
+              marginBottom: 12,
             }}
           >
-            {/* Resize Handle */}
-            <div
-              className="w-1 bg-slate-600 hover:bg-blue-500 cursor-col-resize transition active:bg-blue-600 flex-shrink-0"
-              onMouseDown={() => setIsDragging(true)}
-              title="Drag to resize remote panel"
-            />
-
-            {/* Remote Content */}
-            <div className="flex-1 min-h-0 p-3">
-              <RemoteUI />
-            </div>
+            ⚠️ {errorMsg}
           </div>
         )}
+
+        {/* CONTROLS */}
+        <div className="flex gap-4 items-center mb-4">
+          {!showReconnectBtn && (
+            <button
+              onClick={handleDisconnect}
+              className="px-6 py-2 bg-gray-700 rounded"
+            >
+              ← Home
+            </button>
+          )}
+
+          {showReconnectBtn && (
+            <button
+              onClick={doReconnect}
+              disabled={isReconnecting}
+              className="px-6 py-2 bg-blue-600 rounded"
+            >
+              {isReconnecting ? "Reconnecting..." : "↻ Reconnect"}
+            </button>
+          )}
+
+          <h3 className="text-xl font-bold text-gray-300">TV Screen</h3>
+        </div>
+
+        {/* CANVAS */}
+        <canvas
+          ref={canvasRef}
+          style={{
+            width: "100%",
+            height: "70vh",
+            background: "#000",
+            borderRadius: 12,
+          }}
+        />
+
+        <div style={{ fontSize: 12, marginTop: 8 }}>{statusText}</div>
       </div>
+
+      <RemoteUI />
     </div>
   );
 }
