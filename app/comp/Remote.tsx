@@ -1,6 +1,8 @@
 "use client";
 
 import { useEffect } from "react";
+import { listen, UnlistenFn } from "@tauri-apps/api/event";
+import { api } from "@/lib/api";
 
 type Btn = { label: string; cmd: string };
 
@@ -63,7 +65,7 @@ const KEY_MAP: Record<string, string> = {
 export default function RemoteUI() {
   const run = async (cmd: string) => {
     try {
-      // await api.sendCmd(cmd);
+      await api.sendCmd(cmd);
       console.log("cmd:", cmd);
     } catch (e) {
       console.error(e);
